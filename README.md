@@ -9,13 +9,14 @@ npm.cmd install
 npm.cmd run setup
 ```
 
-`setup` downloads local binaries into `bin/`:
+`setup` downloads local binaries into `bin/` for development:
 
 - `yt-dlp.exe`
 - `ffmpeg.exe`
 - `ffprobe.exe`
 
 These binaries are intentionally not committed to git.
+The packaged portable app does not include them; it can download/update tools from Settings into the user data folder.
 
 ## Run locally
 
@@ -41,7 +42,7 @@ Output:
 release/motionxamon <version>.exe
 ```
 
-The portable build includes `yt-dlp`, FFmpeg, and the app icon.
+The portable build includes the app shell and icon. `yt-dlp` and FFmpeg are downloaded from Settings on first use, which keeps the `.exe` smaller and allows updating tools without rebuilding the app.
 
 ## Notes
 

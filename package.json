@@ -1,6 +1,6 @@
 {
   "name": "motionxamon-video-downloader",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "motionxamon video downloader",
   "type": "module",
@@ -48,10 +48,6 @@
       {
         "from": "dist",
         "to": "dist"
-      },
-      {
-        "from": "bin",
-        "to": "bin"
       },
       {
         "from": "build/icon.ico",

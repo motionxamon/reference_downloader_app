@@ -85,6 +85,7 @@ app.whenReady().then(async () => {
   app.setName("motionxamon");
   logFile = path.join(app.getPath("userData"), "motionxamon.log");
   process.env.MOTIONXAMON_DEFAULT_DOWNLOADS_DIR = path.join(app.getPath("downloads"), "motionxamon");
+  process.env.MOTIONXAMON_TOOLS_DIR = path.join(app.getPath("userData"), "tools");
   process.env.PORT = String(await findFreePort());
   startServer();
   setTimeout(createWindow, 700);

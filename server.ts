@@ -1,7 +1,10 @@
 import express from "express";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cp, mkdtemp, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import https from "node:https";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 type Platform = "instagram" | "youtube" | "pinterest" | "vimeo" | "tiktok" | "reddit" | "twitter" | "vk" | "yandex" | "dailymotion" | "twitch" | "unknown";
@@ -24,6 +27,7 @@ type Job = {
 };
 
 const appRoot = process.env.MOTIONXAMON_APP_ROOT || process.cwd();
+const toolsDir = process.env.MOTIONXAMON_TOOLS_DIR || path.join(appRoot, "bin");
 const app = express();
 const port = Number(process.env.PORT || 4117);
 const defaultDownloadsDir = process.env.MOTIONXAMON_DEFAULT_DOWNLOADS_DIR || path.join(appRoot, "downloads");
@@ -41,6 +45,7 @@ const downloadSettings = {
 };
 
 mkdirSync(defaultDownloadsDir, { recursive: true });
+mkdirSync(toolsDir, { recursive: true });
 
 app.use(express.json({ limit: "1mb" }));
 app.use("/downloads", express.static(defaultDownloadsDir));
@@ -123,6 +128,7 @@ function localYtDlpCandidates() {
 
   return [
     process.env.YT_DLP_PATH,
+    path.join(toolsDir, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
     path.join(appRoot, "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
     ...names.map((name) => path.join(appRoot, "node_modules", ".bin", name)),
     ...names
@@ -144,6 +150,7 @@ function localFfmpegCandidates() {
 
   return [
     process.env.FFMPEG_PATH,
+    path.join(toolsDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
     path.join(appRoot, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
     ...names
   ].filter(Boolean) as string[];
@@ -157,10 +164,139 @@ function resolveFfmpeg() {
   return null;
 }
 
+const toolDefinitions = process.platform === "win32"
+  ? [
+      {
+        name: "yt-dlp",
+        target: path.join(toolsDir, "yt-dlp.exe"),
+        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+      },
+      {
+        name: "ffmpeg",
+        target: path.join(toolsDir, "ffmpeg.exe"),
+        url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+        zipEntries: ["ffmpeg.exe", "ffprobe.exe"]
+      }
+    ]
+  : [
+      {
+        name: "yt-dlp",
+        target: path.join(toolsDir, "yt-dlp"),
+        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+      }
+    ];
+
+function toolsStatus() {
+  return {
+    toolsDir,
+    ytDlp: resolveYtDlp(),
+    ffmpeg: resolveFfmpeg(),
+    ready: Boolean(resolveYtDlp()) && (process.platform !== "win32" || Boolean(resolveFfmpeg())),
+    tools: toolDefinitions.map((tool) => ({
+      name: tool.name,
+      path: tool.target,
+      installed: existsSync(tool.target)
+    }))
+  };
+}
+
+async function installTools(force = false) {
+  mkdirSync(toolsDir, { recursive: true });
+
+  for (const tool of toolDefinitions) {
+    if (!force && existsSync(tool.target)) continue;
+
+    if ("zipEntries" in tool && tool.zipEntries) {
+      await downloadZipTool(tool);
+    } else {
+      await download(tool.url, tool.target);
+    }
+  }
+
+  return toolsStatus();
+}
+
+async function downloadZipTool(tool: { name: string; target: string; url: string; zipEntries?: string[] }) {
+  if (!tool.zipEntries) return;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "motionxamon-"));
+  const archive = path.join(tempDir, `${tool.name}.zip`);
+
+  try {
+    await download(tool.url, archive);
+    await expandArchive(archive, tempDir);
+
+    const files = await listFiles(tempDir);
+    for (const entry of tool.zipEntries) {
+      const found = files.find((file) => path.basename(file).toLowerCase() === entry.toLowerCase());
+      if (!found) throw new Error(`${entry} was not found in ${tool.name} archive.`);
+      await cp(found, path.join(toolsDir, entry), { force: true });
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function expandArchive(archive: string, destination: string) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`
+    ], { windowsHide: true });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `Expand-Archive failed with code ${code}`));
+    });
+  });
+}
+
+async function listFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const fullPath = path.join(directory, entry.name);
+    return entry.isDirectory() ? await listFiles(fullPath) : [fullPath];
+  }));
+  return files.flat();
+}
+
+function download(source: string, destination: string, redirects = 0): Promise<void> {
+  if (redirects > 5) {
+    return Promise.reject(new Error(`Too many redirects while downloading ${source}.`));
+  }
+
+  return new Promise((resolve, reject) => {
+    https.get(source, (response) => {
+      if ([301, 302, 303, 307, 308].includes(response.statusCode || 0)) {
+        response.resume();
+        const location = new URL(response.headers.location || "", source).toString();
+        download(location, destination, redirects + 1).then(resolve, reject);
+        return;
+      }
+
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Download failed with HTTP ${response.statusCode}: ${source}`));
+        return;
+      }
+
+      const file = createWriteStream(destination);
+      response.pipe(file);
+      file.on("finish", () => file.close(() => resolve()));
+      file.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
 function runYtDlp(args: string[], onData?: (text: string) => void) {
   const command = resolveYtDlp();
   if (!command) {
-    throw new Error("yt-dlp не установлен. Выполни npm.cmd run setup.");
+    throw new Error("yt-dlp не найден. Открой настройки и нажми «Скачать/обновить инструменты».");
   }
 
   const child = spawn(command, args, {
@@ -332,6 +468,7 @@ app.get("/api/health", (_req, res) => {
     ytDlp: resolveYtDlp(),
     ffmpeg: resolveFfmpeg(),
     ffmpegOk: Boolean(resolveFfmpeg()),
+    tools: toolsStatus(),
     downloadsDir: currentDownloadsDir,
     activeDownloads,
     queuedDownloads: pendingJobs.length,
@@ -353,6 +490,19 @@ app.post("/api/settings", (req, res) => {
     res.json(downloadSettings);
   } catch (error) {
     res.status(400).json({ error: friendlyError(error) });
+  }
+});
+
+app.get("/api/tools", (_req, res) => {
+  res.json(toolsStatus());
+});
+
+app.post("/api/tools/install", async (req, res) => {
+  try {
+    const force = Boolean(req.body?.force);
+    res.json(await installTools(force));
+  } catch (error) {
+    res.status(500).json({ error: friendlyError(error) });
   }
 });
 

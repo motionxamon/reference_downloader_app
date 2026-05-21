@@ -1,11 +1,21 @@
 import React, { useEffect, useState } from "react";
-import { RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
+import { DownloadCloud, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
 
 export type DownloadSettings = {
   maxConcurrentDownloads: number;
   rateLimit: string;
   concurrentFragments: number;
   retries: number;
+};
+
+type ToolsStatus = {
+  toolsDir: string;
+  ready: boolean;
+  tools: Array<{
+    name: string;
+    path: string;
+    installed: boolean;
+  }>;
 };
 
 interface SettingsModalProps {
@@ -22,7 +32,15 @@ const defaults: DownloadSettings = {
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [settings, setSettings] = useState<DownloadSettings>(defaults);
+  const [tools, setTools] = useState<ToolsStatus | null>(null);
   const [status, setStatus] = useState("");
+  const [toolsBusy, setToolsBusy] = useState(false);
+
+  const refreshTools = async () => {
+    const response = await fetch("/api/tools");
+    const data = await response.json();
+    if (response.ok) setTools(data);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -30,6 +48,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       .then((response) => response.json())
       .then((data) => setSettings({ ...defaults, ...data }))
       .catch(() => setStatus("Не удалось прочитать настройки."));
+    refreshTools().catch(() => setStatus("Не удалось прочитать статус инструментов."));
   }, [open]);
 
   if (!open) return null;
@@ -50,6 +69,26 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setStatus("Настройки сохранены.");
   };
 
+  const installTools = async (force: boolean) => {
+    setToolsBusy(true);
+    setStatus(force ? "Обновляем yt-dlp и FFmpeg..." : "Скачиваем yt-dlp и FFmpeg...");
+    try {
+      const response = await fetch("/api/tools/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не удалось скачать инструменты.");
+      setTools(data);
+      setStatus("Инструменты готовы.");
+    } catch (error: any) {
+      setStatus(error.message || "Не удалось скачать инструменты.");
+    } finally {
+      setToolsBusy(false);
+    }
+  };
+
   const updateNumber = (key: keyof DownloadSettings, value: string) => {
     setSettings((current) => ({ ...current, [key]: Number(value) }));
   };
@@ -64,7 +103,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </div>
             <div>
               <h2 className="text-sm font-semibold text-white">Настройки загрузки</h2>
-              <p className="text-[11px] text-zinc-500">Очередь, скорость и поведение yt-dlp</p>
+              <p className="text-[11px] text-zinc-500">Очередь, скорость, yt-dlp и FFmpeg</p>
             </div>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg p-2 text-zinc-500 transition hover:bg-zinc-900 hover:text-white">
@@ -73,6 +112,45 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
 
         <div className="space-y-5 p-5">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/50 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">Инструменты</h3>
+                <p className="mt-1 truncate text-[11px] font-mono text-zinc-600">{tools?.toolsDir || "..."}</p>
+              </div>
+              <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${tools?.ready ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-rose-500/20 bg-rose-500/10 text-rose-300"}`}>
+                {tools?.ready ? "готово" : "нужно скачать"}
+              </span>
+            </div>
+
+            <div className="mb-3 grid gap-2 sm:grid-cols-2">
+              {tools?.tools.map((tool) => (
+                <div key={tool.name} className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-zinc-200">{tool.name}</span>
+                    <span className={tool.installed ? "text-[10px] text-emerald-300" : "text-[10px] text-rose-300"}>
+                      {tool.installed ? "есть" : "нет"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => installTools(Boolean(tools?.ready))}
+              disabled={toolsBusy}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-700 px-3 py-2.5 text-xs font-semibold text-zinc-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300 disabled:pointer-events-none disabled:opacity-60"
+            >
+              {toolsBusy ? (
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-500 border-t-emerald-300 animate-spin" />
+              ) : (
+                <DownloadCloud className="h-3.5 w-3.5" />
+              )}
+              {tools?.ready ? "Обновить инструменты" : "Скачать инструменты"}
+            </button>
+          </div>
+
           <label className="block">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs font-semibold text-zinc-200">Параллельные скачивания</span>
