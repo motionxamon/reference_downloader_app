@@ -171,6 +171,14 @@ function getToolVersion(command: string | null, args: string[]) {
 }
 
 type ToolManifest = Record<string, { latestTag?: string; installedAt?: string }>;
+type ToolDefinition = {
+  name: string;
+  target: string;
+  url: string;
+  latestApi?: string;
+  assetPattern?: RegExp;
+  zipEntries?: string[];
+};
 
 function readToolsManifest(): ToolManifest {
   try {
@@ -215,29 +223,38 @@ function fetchJson(url: string): Promise<any> {
   });
 }
 
-async function latestToolTag(tool: { latestApi?: string }) {
-  if (!tool.latestApi) return "";
+async function latestToolInfo(tool: Pick<ToolDefinition, "latestApi" | "assetPattern">) {
+  if (!tool.latestApi) return { tagName: "", assetUrl: "" };
   try {
     const release = await fetchJson(tool.latestApi);
-    return String(release.tag_name || "").trim();
+    const asset = Array.isArray(release.assets) && tool.assetPattern
+      ? release.assets.find((item: any) => tool.assetPattern?.test(String(item.name || "")))
+      : undefined;
+
+    return {
+      tagName: String(release.tag_name || "").trim(),
+      assetUrl: String(asset?.browser_download_url || "").trim()
+    };
   } catch {
-    return "";
+    return { tagName: "", assetUrl: "" };
   }
 }
 
-const toolDefinitions = process.platform === "win32"
+const toolDefinitions: ToolDefinition[] = process.platform === "win32"
   ? [
       {
         name: "yt-dlp",
         target: path.join(toolsDir, "yt-dlp.exe"),
         url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
-        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+        assetPattern: /^yt-dlp\.exe$/i
       },
       {
         name: "ffmpeg",
         target: path.join(toolsDir, "ffmpeg.exe"),
         url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
         latestApi: "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+        assetPattern: /^ffmpeg-.*-win64-gpl\.zip$/i,
         zipEntries: ["ffmpeg.exe", "ffprobe.exe"]
       }
     ]
@@ -246,7 +263,8 @@ const toolDefinitions = process.platform === "win32"
         name: "yt-dlp",
         target: path.join(toolsDir, "yt-dlp"),
         url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
-        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+        assetPattern: /^yt-dlp$/i
       }
     ];
 
@@ -256,7 +274,8 @@ async function toolsStatus() {
   const manifest = readToolsManifest();
   const toolStatuses = await Promise.all(toolDefinitions.map(async (tool) => {
     const installed = existsSync(tool.target);
-    const latestTag = await latestToolTag(tool);
+    const latest = await latestToolInfo(tool);
+    const latestTag = latest.tagName;
     const version = tool.name === "yt-dlp"
       ? getToolVersion(ytDlp, ["--version"])
       : getToolVersion(ffmpeg, ["-version"]).replace(/^ffmpeg version\s+/i, "");
@@ -294,12 +313,14 @@ async function installTools(force = false) {
 
   for (const tool of toolDefinitions) {
     if (!force && existsSync(tool.target)) continue;
-    const latestTag = await latestToolTag(tool);
+    const latest = await latestToolInfo(tool);
+    const latestTag = latest.tagName;
+    const downloadUrl = latest.assetUrl || tool.url;
 
     if ("zipEntries" in tool && tool.zipEntries) {
-      await downloadZipTool(tool);
+      await downloadZipTool({ ...tool, url: downloadUrl });
     } else {
-      await download(tool.url, tool.target);
+      await download(downloadUrl, tool.target);
     }
 
     manifest[tool.name] = {
