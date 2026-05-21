@@ -1,6 +1,15 @@
-import React, { useEffect, useState } from "react";
-import { AlertTriangle, DownloadCloud, RefreshCw, Wrench } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, DownloadCloud, RefreshCw } from "lucide-react";
 import type { ToolsStatus } from "./SettingsModal";
+
+type ToolState = NonNullable<ToolsStatus["tools"][number]["status"]>;
+
+const toolClasses: Record<ToolState, string> = {
+  ready: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300",
+  update: "border-amber-500/25 bg-amber-500/10 text-amber-300",
+  unknown: "border-amber-500/25 bg-amber-500/10 text-amber-300",
+  missing: "border-rose-500/25 bg-rose-500/10 text-rose-300"
+};
 
 export function ToolStatusPanel() {
   const [tools, setTools] = useState<ToolsStatus | null>(null);
@@ -10,16 +19,32 @@ export function ToolStatusPanel() {
   const refresh = async () => {
     const response = await fetch("/api/tools");
     const data = await response.json();
-    if (response.ok) setTools(data);
+    if (!response.ok) throw new Error(data.error || "Не удалось проверить инструменты.");
+    setTools(data);
+    return data as ToolsStatus;
   };
 
   useEffect(() => {
     refresh().catch(() => setMessage("Не удалось проверить инструменты."));
   }, []);
 
+  const state = useMemo(() => {
+    const missing = Boolean(tools && !tools.ready);
+    const update = Boolean(tools?.updateAvailable || tools?.unknown);
+    const ready = Boolean(tools?.ready && !update);
+
+    return {
+      missing,
+      update,
+      ready,
+      label: missing ? "Скачать" : update ? "Обновить" : ready ? "Готово" : "Проверка",
+      note: missing ? "без tools не работает" : update ? "нужно обновить" : ready ? "обновление не требуется" : "проверяем tools"
+    };
+  }, [tools]);
+
   const installTools = async () => {
     setBusy(true);
-    setMessage(tools?.ready ? "Обновляем инструменты..." : "Скачиваем инструменты...");
+    setMessage("");
     try {
       const response = await fetch("/api/tools/install", {
         method: "POST",
@@ -29,7 +54,7 @@ export function ToolStatusPanel() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось скачать инструменты.");
       setTools(data);
-      setMessage("Инструменты готовы.");
+      setMessage(data.updateAvailable || data.unknown ? "Проверь обновления еще раз." : "Готово.");
     } catch (error: any) {
       setMessage(error.message || "Не удалось скачать инструменты.");
     } finally {
@@ -37,59 +62,53 @@ export function ToolStatusPanel() {
     }
   };
 
-  const ready = Boolean(tools?.ready);
+  const Icon = state.missing ? DownloadCloud : state.update ? RefreshCw : Check;
 
   return (
-    <section className={`w-full max-w-3xl mx-auto rounded-2xl border p-4 ${ready ? "border-emerald-500/20 bg-emerald-500/5" : "border-rose-500/25 bg-rose-500/5"}`}>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <div className="mb-2 flex items-center gap-2">
-            <div className={`flex h-8 w-8 items-center justify-center rounded-xl border ${ready ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-rose-500/20 bg-rose-500/10 text-rose-300"}`}>
-              {ready ? <Wrench className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
-            </div>
-            <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-200">
-                {ready ? "Инструменты готовы" : "Нужно скачать инструменты"}
-              </h3>
-              <p className="text-[11px] text-zinc-500">
-                Без yt-dlp и FFmpeg скачивание и склейка видео не будут работать.
-              </p>
-            </div>
-          </div>
+    <section className="w-full max-w-3xl mx-auto -mt-3">
+      <div className="inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950/55 px-2 py-1.5 shadow-lg shadow-black/10">
+        {tools?.tools.map((tool) => {
+          const status = tool.status || (tool.installed ? "unknown" : "missing");
+          const version = tool.version || (tool.installed ? "version unknown" : "нет");
+          const title = `${tool.name}: ${version}${tool.latestTag ? ` / latest ${tool.latestTag}` : ""}`;
 
-          <div className="flex flex-wrap gap-2">
-            {tools?.tools.map((tool) => (
-              <div key={tool.name} className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-zinc-200">{tool.name}</span>
-                  <span className={tool.installed ? "text-[10px] font-semibold text-emerald-300" : "text-[10px] font-semibold text-rose-300"}>
-                    {tool.installed ? "есть" : "нет"}
-                  </span>
-                </div>
-                <p className="mt-0.5 max-w-52 truncate font-mono text-[10px] text-zinc-600">
-                  {tool.version || "version unknown"}
-                </p>
-              </div>
-            ))}
-          </div>
+          return (
+            <span
+              key={tool.name}
+              title={title}
+              className={`inline-flex h-6 min-w-0 items-center gap-1 rounded-lg border px-2 text-[10px] font-semibold ${toolClasses[status]}`}
+            >
+              <span>{tool.name}</span>
+              <span className="max-w-20 truncate font-mono opacity-70">{version}</span>
+            </span>
+          );
+        })}
 
-          {message && <p className="mt-2 text-xs text-zinc-400">{message}</p>}
-        </div>
+        {!tools && (
+          <span className="inline-flex h-6 items-center rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-[10px] font-semibold text-zinc-400">
+            проверка tools
+          </span>
+        )}
+
+        <span className={`px-1.5 text-[10px] font-semibold ${state.ready ? "text-emerald-300" : state.missing ? "text-rose-300" : "text-amber-300"}`}>
+          {message || state.note}
+        </span>
 
         <button
           type="button"
-          onClick={installTools}
-          disabled={busy}
-          className={`inline-flex shrink-0 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold transition disabled:pointer-events-none disabled:opacity-60 ${ready ? "border border-zinc-700 text-zinc-200 hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300" : "bg-white text-black hover:bg-zinc-200"}`}
+          onClick={state.ready ? refresh : installTools}
+          disabled={busy || !tools}
+          className={`inline-flex h-6 items-center gap-1 rounded-lg border px-2 text-[10px] font-bold transition disabled:opacity-60 ${
+            state.ready
+              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15"
+              : state.update
+                ? "border-amber-500/25 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15"
+                : "border-rose-500/25 bg-rose-500/10 text-rose-300 hover:bg-rose-500/15"
+          }`}
+          title={state.ready ? "Проверить еще раз" : state.label}
         >
-          {busy ? (
-            <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-500 border-t-emerald-300 animate-spin" />
-          ) : ready ? (
-            <RefreshCw className="h-3.5 w-3.5" />
-          ) : (
-            <DownloadCloud className="h-3.5 w-3.5" />
-          )}
-          {ready ? "Обновить" : "Скачать"}
+          <Icon className={`h-3 w-3 ${busy ? "animate-spin" : ""}`} />
+          {state.label}
         </button>
       </div>
     </section>

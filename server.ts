@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cp, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import https from "node:https";
@@ -28,6 +28,7 @@ type Job = {
 
 const appRoot = process.env.MOTIONXAMON_APP_ROOT || process.cwd();
 const toolsDir = process.env.MOTIONXAMON_TOOLS_DIR || path.join(appRoot, "bin");
+const toolsManifestPath = path.join(toolsDir, "tools-manifest.json");
 const app = express();
 const port = Number(process.env.PORT || 4117);
 const defaultDownloadsDir = process.env.MOTIONXAMON_DEFAULT_DOWNLOADS_DIR || path.join(appRoot, "downloads");
@@ -169,17 +170,74 @@ function getToolVersion(command: string | null, args: string[]) {
   }
 }
 
+type ToolManifest = Record<string, { latestTag?: string; installedAt?: string }>;
+
+function readToolsManifest(): ToolManifest {
+  try {
+    return JSON.parse(readFileSync(toolsManifestPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeToolsManifest(manifest: ToolManifest) {
+  mkdirSync(toolsDir, { recursive: true });
+  writeFileSync(toolsManifestPath, JSON.stringify(manifest, null, 2), "utf8");
+}
+
+function fetchJson(url: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "motionxamon"
+      }
+    }, (response) => {
+      let body = "";
+      response.on("data", (chunk) => {
+        body += chunk.toString();
+      });
+      response.on("end", () => {
+        if ((response.statusCode || 0) >= 400) {
+          reject(new Error(`GitHub API returned HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }).on("error", reject);
+    request.setTimeout(8000, () => {
+      request.destroy(new Error("GitHub API timeout"));
+    });
+  });
+}
+
+async function latestToolTag(tool: { latestApi?: string }) {
+  if (!tool.latestApi) return "";
+  try {
+    const release = await fetchJson(tool.latestApi);
+    return String(release.tag_name || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 const toolDefinitions = process.platform === "win32"
   ? [
       {
         name: "yt-dlp",
         target: path.join(toolsDir, "yt-dlp.exe"),
-        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
       },
       {
         name: "ffmpeg",
         target: path.join(toolsDir, "ffmpeg.exe"),
         url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+        latestApi: "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
         zipEntries: ["ffmpeg.exe", "ffprobe.exe"]
       }
     ]
@@ -187,44 +245,71 @@ const toolDefinitions = process.platform === "win32"
       {
         name: "yt-dlp",
         target: path.join(toolsDir, "yt-dlp"),
-        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+        url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+        latestApi: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
       }
     ];
 
-function toolsStatus() {
+async function toolsStatus() {
   const ytDlp = resolveYtDlp();
   const ffmpeg = resolveFfmpeg();
+  const manifest = readToolsManifest();
+  const toolStatuses = await Promise.all(toolDefinitions.map(async (tool) => {
+    const installed = existsSync(tool.target);
+    const latestTag = await latestToolTag(tool);
+    const version = tool.name === "yt-dlp"
+      ? getToolVersion(ytDlp, ["--version"])
+      : getToolVersion(ffmpeg, ["-version"]).replace(/^ffmpeg version\s+/i, "");
+    const installedTag = tool.name === "yt-dlp" ? version : manifest[tool.name]?.latestTag || "";
+    const upToDate = installed && latestTag ? installedTag === latestTag : false;
+    const updateAvailable = installed && latestTag ? installedTag !== latestTag : false;
+
+    return {
+      name: tool.name,
+      path: tool.target,
+      installed,
+      version,
+      installedTag,
+      latestTag,
+      upToDate,
+      updateAvailable,
+      status: !installed ? "missing" : latestTag ? (upToDate ? "ready" : "update") : "unknown"
+    };
+  }));
 
   return {
     toolsDir,
     ytDlp,
     ffmpeg,
     ready: Boolean(ytDlp) && (process.platform !== "win32" || Boolean(ffmpeg)),
-    tools: toolDefinitions.map((tool) => ({
-      name: tool.name,
-      path: tool.target,
-      installed: existsSync(tool.target),
-      version: tool.name === "yt-dlp"
-        ? getToolVersion(ytDlp, ["--version"])
-        : getToolVersion(ffmpeg, ["-version"]).replace(/^ffmpeg version\s+/i, "")
-    }))
+    updateAvailable: toolStatuses.some((tool) => tool.updateAvailable),
+    unknown: toolStatuses.some((tool) => tool.status === "unknown"),
+    tools: toolStatuses
   };
 }
 
 async function installTools(force = false) {
   mkdirSync(toolsDir, { recursive: true });
+  const manifest = readToolsManifest();
 
   for (const tool of toolDefinitions) {
     if (!force && existsSync(tool.target)) continue;
+    const latestTag = await latestToolTag(tool);
 
     if ("zipEntries" in tool && tool.zipEntries) {
       await downloadZipTool(tool);
     } else {
       await download(tool.url, tool.target);
     }
+
+    manifest[tool.name] = {
+      latestTag,
+      installedAt: new Date().toISOString()
+    };
   }
 
-  return toolsStatus();
+  writeToolsManifest(manifest);
+  return await toolsStatus();
 }
 
 async function downloadZipTool(tool: { name: string; target: string; url: string; zipEntries?: string[] }) {
@@ -473,13 +558,13 @@ function friendlyError(error: unknown, url = "") {
   return message;
 }
 
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", async (_req, res) => {
   res.json({
     ok: Boolean(resolveYtDlp()),
     ytDlp: resolveYtDlp(),
     ffmpeg: resolveFfmpeg(),
     ffmpegOk: Boolean(resolveFfmpeg()),
-    tools: toolsStatus(),
+    tools: await toolsStatus(),
     downloadsDir: currentDownloadsDir,
     activeDownloads,
     queuedDownloads: pendingJobs.length,
@@ -504,8 +589,8 @@ app.post("/api/settings", (req, res) => {
   }
 });
 
-app.get("/api/tools", (_req, res) => {
-  res.json(toolsStatus());
+app.get("/api/tools", async (_req, res) => {
+  res.json(await toolsStatus());
 });
 
 app.post("/api/tools/install", async (req, res) => {

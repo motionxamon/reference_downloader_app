@@ -11,11 +11,18 @@ export type DownloadSettings = {
 export type ToolsStatus = {
   toolsDir: string;
   ready: boolean;
+  updateAvailable?: boolean;
+  unknown?: boolean;
   tools: Array<{
     name: string;
     path: string;
     installed: boolean;
     version?: string;
+    installedTag?: string;
+    latestTag?: string;
+    upToDate?: boolean;
+    updateAvailable?: boolean;
+    status?: "missing" | "ready" | "update" | "unknown";
   }>;
 };
 
