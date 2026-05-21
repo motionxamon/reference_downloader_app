@@ -4,6 +4,7 @@ import { UrlInput } from "./components/UrlInput";
 import { InfoCard } from "./components/InfoCard";
 import { HistoryList } from "./components/HistoryList";
 import { SettingsModal } from "./components/SettingsModal";
+import { ToolStatusPanel } from "./components/ToolStatusPanel";
 import { CompletedDownload, DownloadFormat, DownloadProgress, HistoryItem, VideoDetails } from "./types";
 
 const idleProgress: DownloadProgress = {
@@ -273,6 +274,8 @@ export default function App() {
             Одна ссылка открывает выбор формата. Несколько ссылок можно настроить и отправить в очередь.
           </p>
         </div>
+
+        <ToolStatusPanel />
 
         <div className="w-full max-w-3xl mx-auto">
           <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 ml-1 font-mono">

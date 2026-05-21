@@ -5,7 +5,7 @@ import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync
 import { cp, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import https from "node:https";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 type Platform = "instagram" | "youtube" | "pinterest" | "vimeo" | "tiktok" | "reddit" | "twitter" | "vk" | "yandex" | "dailymotion" | "twitch" | "unknown";
 
@@ -122,16 +122,11 @@ function titleFromUrl(value: string) {
 }
 
 function localYtDlpCandidates() {
-  const names = process.platform === "win32"
-    ? ["yt-dlp.cmd", "yt-dlp.exe", "yt-dlp"]
-    : ["yt-dlp"];
-
   return [
     process.env.YT_DLP_PATH,
     path.join(toolsDir, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
     path.join(appRoot, "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
-    ...names.map((name) => path.join(appRoot, "node_modules", ".bin", name)),
-    ...names
+    path.join(appRoot, "node_modules", ".bin", process.platform === "win32" ? "yt-dlp.cmd" : "yt-dlp")
   ].filter(Boolean) as string[];
 }
 
@@ -144,15 +139,10 @@ function resolveYtDlp() {
 }
 
 function localFfmpegCandidates() {
-  const names = process.platform === "win32"
-    ? ["ffmpeg.exe", "ffmpeg"]
-    : ["ffmpeg"];
-
   return [
     process.env.FFMPEG_PATH,
     path.join(toolsDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
-    path.join(appRoot, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"),
-    ...names
+    path.join(appRoot, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")
   ].filter(Boolean) as string[];
 }
 
@@ -162,6 +152,21 @@ function resolveFfmpeg() {
     return candidate;
   }
   return null;
+}
+
+function getToolVersion(command: string | null, args: string[]) {
+  if (!command) return "";
+  try {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5000
+    });
+    const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+    return output.split(/\r?\n/)[0] || "";
+  } catch {
+    return "";
+  }
 }
 
 const toolDefinitions = process.platform === "win32"
@@ -187,15 +192,21 @@ const toolDefinitions = process.platform === "win32"
     ];
 
 function toolsStatus() {
+  const ytDlp = resolveYtDlp();
+  const ffmpeg = resolveFfmpeg();
+
   return {
     toolsDir,
-    ytDlp: resolveYtDlp(),
-    ffmpeg: resolveFfmpeg(),
-    ready: Boolean(resolveYtDlp()) && (process.platform !== "win32" || Boolean(resolveFfmpeg())),
+    ytDlp,
+    ffmpeg,
+    ready: Boolean(ytDlp) && (process.platform !== "win32" || Boolean(ffmpeg)),
     tools: toolDefinitions.map((tool) => ({
       name: tool.name,
       path: tool.target,
-      installed: existsSync(tool.target)
+      installed: existsSync(tool.target),
+      version: tool.name === "yt-dlp"
+        ? getToolVersion(ytDlp, ["--version"])
+        : getToolVersion(ffmpeg, ["-version"]).replace(/^ffmpeg version\s+/i, "")
     }))
   };
 }

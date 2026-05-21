@@ -8,19 +8,21 @@ export type DownloadSettings = {
   retries: number;
 };
 
-type ToolsStatus = {
+export type ToolsStatus = {
   toolsDir: string;
   ready: boolean;
   tools: Array<{
     name: string;
     path: string;
     installed: boolean;
+    version?: string;
   }>;
 };
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
+  onToolsChange?: (tools: ToolsStatus) => void;
 }
 
 const defaults: DownloadSettings = {
@@ -30,7 +32,7 @@ const defaults: DownloadSettings = {
   retries: 10
 };
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalProps) {
   const [settings, setSettings] = useState<DownloadSettings>(defaults);
   const [tools, setTools] = useState<ToolsStatus | null>(null);
   const [status, setStatus] = useState("");
@@ -39,7 +41,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const refreshTools = async () => {
     const response = await fetch("/api/tools");
     const data = await response.json();
-    if (response.ok) setTools(data);
+    if (response.ok) {
+      setTools(data);
+      onToolsChange?.(data);
+    }
   };
 
   useEffect(() => {
@@ -66,7 +71,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       return;
     }
     setSettings(data);
-    setStatus("Настройки сохранены.");
+    onClose();
   };
 
   const installTools = async (force: boolean) => {
@@ -81,6 +86,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось скачать инструменты.");
       setTools(data);
+      onToolsChange?.(data);
       setStatus("Инструменты готовы.");
     } catch (error: any) {
       setStatus(error.message || "Не удалось скачать инструменты.");
@@ -113,14 +119,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         <div className="space-y-5 p-5">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/50 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">Инструменты</h3>
-                <p className="mt-1 truncate text-[11px] font-mono text-zinc-600">{tools?.toolsDir || "..."}</p>
-              </div>
-              <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${tools?.ready ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-rose-500/20 bg-rose-500/10 text-rose-300"}`}>
-                {tools?.ready ? "готово" : "нужно скачать"}
-              </span>
+            <div className="mb-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">Инструменты</h3>
+              <p className="mt-1 truncate text-[11px] font-mono text-zinc-600">{tools?.toolsDir || "..."}</p>
             </div>
 
             <div className="mb-3 grid gap-2 sm:grid-cols-2">
@@ -132,6 +133,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       {tool.installed ? "есть" : "нет"}
                     </span>
                   </div>
+                  <p className="mt-1 truncate font-mono text-[10px] text-zinc-600">{tool.version || "version unknown"}</p>
                 </div>
               ))}
             </div>
