@@ -491,7 +491,7 @@ function formatDuration(seconds?: number) {
 }
 
 function formatBytes(bytes?: number) {
-  if (!bytes || bytes <= 0) return "Неизвестно";
+  if (!bytes || bytes <= 0) return "";
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
   let index = 0;
@@ -500,6 +500,35 @@ function formatBytes(bytes?: number) {
     index += 1;
   }
   return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatFileSize(bytes?: number) {
+  return formatBytes(bytes) || "размер при скачивании";
+}
+
+function formatBitrate(format: any) {
+  const value = Number(format.tbr || format.vbr || format.abr || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function uniqueMp4Formats(formats: any[]) {
+  const byResolution = new Map<string, any>();
+
+  for (const format of formats) {
+    if (format.ext !== "mp4" || !format.height || format.vcodec === "none") continue;
+    const key = `${format.height}p-${format.fps || ""}`;
+    const current = byResolution.get(key);
+    const currentScore = current ? formatBitrate(current) || Number(current.filesize || current.filesize_approx || 0) : 0;
+    const nextScore = formatBitrate(format) || Number(format.filesize || format.filesize_approx || 0);
+
+    if (!current || nextScore > currentScore) {
+      byResolution.set(key, format);
+    }
+  }
+
+  return Array.from(byResolution.values())
+    .sort((a, b) => (b.height || 0) - (a.height || 0) || formatBitrate(b) - formatBitrate(a))
+    .slice(0, 5);
 }
 
 async function getRemoteSize(url: string) {
@@ -857,7 +886,7 @@ app.post("/api/process", async (req, res) => {
             id: "direct",
             label: "Прямой видеофайл",
             resolution: /_(\d{3,4})w\./i.test(url) ? `${url.match(/_(\d{3,4})w\./i)?.[1]}w` : "Original",
-            size: formatBytes(size),
+            size: formatFileSize(size),
             url,
             isReal: true
           }
@@ -877,31 +906,26 @@ app.post("/api/process", async (req, res) => {
     const { stdout } = await result;
     const info = JSON.parse(stdout);
     const platform = platformFromExtractor(info.extractor_key || info.extractor, detectPlatform(info.webpage_url || url));
-    const mp4Formats = Array.isArray(info.formats)
-      ? info.formats
-        .filter((format: any) => format.ext === "mp4" && (format.height || format.format_note))
-        .sort((a: any, b: any) => (b.height || 0) - (a.height || 0))
-        .slice(0, 3)
-      : [];
-
-    const formats = [
-      {
-        id: "best",
-        label: "Лучшее качество",
-        resolution: info.height ? `${info.height}p` : "Auto",
-        size: formatBytes(info.filesize || info.filesize_approx),
-        url,
-        isReal: true
-      },
-      ...mp4Formats.map((format: any, index: number) => ({
-        id: `mp4-${format.format_id || index}`,
-        label: "Предпочесть MP4",
-        resolution: format.height ? `${format.height}p` : (format.format_note || "MP4"),
-        size: formatBytes(format.filesize || format.filesize_approx),
-        url,
-        isReal: true
-      }))
-    ];
+    const mp4Formats = Array.isArray(info.formats) ? uniqueMp4Formats(info.formats) : [];
+    const formats = mp4Formats.length > 0
+      ? mp4Formats.map((format: any, index: number) => ({
+          id: `format:${format.format_id || index}`,
+          label: "MP4",
+          resolution: format.height ? `${format.height}p${format.fps ? ` ${format.fps}fps` : ""}` : "MP4",
+          size: formatFileSize(format.filesize || format.filesize_approx),
+          url,
+          isReal: true
+        }))
+      : [
+          {
+            id: "best",
+            label: "MP4 auto",
+            resolution: info.height ? `${info.height}p` : "Auto",
+            size: formatFileSize(info.filesize || info.filesize_approx),
+            url,
+            isReal: true
+          }
+        ];
 
     res.json({
       success: true,
@@ -919,9 +943,10 @@ app.post("/api/process", async (req, res) => {
 });
 
 function downloadArgs(job: Job) {
-  const format = job.formatId.startsWith("mp4")
-    ? "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best"
-    : "bv*+ba/best";
+  const exactFormat = job.formatId.startsWith("format:") ? job.formatId.slice("format:".length) : "";
+  const format = exactFormat
+    ? `${exactFormat}+ba[ext=m4a]/${exactFormat}+bestaudio/${exactFormat}/best[ext=mp4]/best`
+    : "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best";
   const ffmpeg = resolveFfmpeg();
 
   return [
