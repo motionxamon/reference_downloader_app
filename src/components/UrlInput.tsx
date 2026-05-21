@@ -3,14 +3,16 @@ import { ArrowRight, Clipboard, Download, Link2, X } from "lucide-react";
 
 interface UrlInputProps {
   onProcess: (url: string) => void;
-  onBatchDownload: (text: string) => void;
+  onBatchDownload: (text: string, formatId: string) => void;
+  onStopBatch: () => void;
   isLoading: boolean;
   isBatchLoading?: boolean;
   initialUrl?: string;
 }
 
-export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading = false, initialUrl = "" }: UrlInputProps) {
+export function UrlInput({ onProcess, onBatchDownload, onStopBatch, isLoading, isBatchLoading = false, initialUrl = "" }: UrlInputProps) {
   const [url, setUrl] = useState(initialUrl);
+  const [batchFormatId, setBatchFormatId] = useState("best");
 
   useEffect(() => {
     setUrl(initialUrl);
@@ -24,7 +26,7 @@ export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const urls = extractUrls(url);
-    if (urls.length > 1) onBatchDownload(url);
+    if (urls.length > 1) onBatchDownload(url, batchFormatId);
     else if (urls[0]) onProcess(urls[0]);
   };
 
@@ -61,7 +63,6 @@ export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading
   const platform = getDetectedPlatform();
   const urls = extractUrls(url);
   const isBatch = urls.length > 1;
-  const busy = isLoading || isBatchLoading;
   const platformStyle = platform
     ? "border-emerald-500/60 shadow-emerald-950/30 shadow-lg focus-within:ring-2 focus-within:ring-emerald-500/10"
     : "border-slate-800 focus-within:border-slate-700 focus-within:ring-2 focus-within:ring-white/5";
@@ -78,7 +79,7 @@ export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading
           onChange={(event) => setUrl(event.target.value)}
           placeholder={"Вставь одну ссылку для анализа или несколько ссылок для очереди\nhttps://youtube.com/...\nhttps://vimeo.com/..."}
           required
-          disabled={busy}
+          disabled={isLoading}
           rows={3}
           className="min-h-24 w-full resize-y bg-transparent border-0 text-white placeholder-zinc-500 text-sm focus:outline-none py-3 px-2 disabled:opacity-50"
         />
@@ -109,10 +110,10 @@ export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading
 
           <button
             type="submit"
-            disabled={busy || !url.trim()}
+            disabled={isLoading || isBatchLoading || !url.trim()}
             className="flex items-center justify-center px-5 py-2.5 rounded-xl bg-white text-black font-semibold text-xs tracking-wide transition hover:bg-zinc-200 active:scale-95 disabled:opacity-50 disabled:pointer-events-none gap-1"
           >
-            {busy ? (
+            {isLoading || isBatchLoading ? (
               <div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
             ) : isBatch ? (
               <>
@@ -129,13 +130,37 @@ export function UrlInput({ onProcess, onBatchDownload, isLoading, isBatchLoading
         </div>
       </div>
 
-      {platform && (
-        <div className="flex justify-end mt-2 animate-fade-in text-[10px] font-mono tracking-wider uppercase">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 animate-fade-in text-[10px] font-mono tracking-wider uppercase">
+        {platform ? (
           <span className="px-2 py-0.5 rounded-md border text-[9px] bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
             Распознано: {platform}
           </span>
-        </div>
-      )}
+        ) : <span />}
+
+        {isBatch && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-zinc-500">Параметры пачки</span>
+            <select
+              value={batchFormatId}
+              onChange={(event) => setBatchFormatId(event.target.value)}
+              disabled={isBatchLoading}
+              className="h-8 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-[10px] font-semibold text-zinc-200 outline-none focus:border-emerald-500/50 disabled:opacity-60"
+            >
+              <option value="best">Лучшее качество</option>
+              <option value="mp4">Предпочесть MP4</option>
+            </select>
+            {isBatchLoading && (
+              <button
+                type="button"
+                onClick={onStopBatch}
+                className="h-8 rounded-lg border border-rose-500/30 px-3 text-[10px] font-semibold text-rose-300 transition hover:bg-rose-500/10"
+              >
+                Стоп
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </form>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { CloudLightning, FolderOpen, Settings } from "lucide-react";
+import { CloudLightning, FolderOpen, Play, Settings, Square } from "lucide-react";
 import { UrlInput } from "./components/UrlInput";
 import { InfoCard } from "./components/InfoCard";
 import { HistoryList } from "./components/HistoryList";
@@ -16,7 +16,7 @@ type BatchJob = {
   id: string;
   url: string;
   progress: number;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "canceled";
   output?: string;
   outputDir?: string;
   error?: string;
@@ -77,6 +77,15 @@ export default function App() {
     });
   };
 
+  const openFile = async (path?: string) => {
+    if (!path) return;
+    await fetch("/api/open-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
+  };
+
   const chooseFolder = async () => {
     const response = await fetch("/api/select-folder-modern", { method: "POST" });
     if (response.status === 409) return null;
@@ -120,33 +129,39 @@ export default function App() {
     }
   };
 
+  const refreshBatchJobs = async (jobs: BatchJob[]) => {
+    const updated = await Promise.all(jobs.map(async (job) => {
+      const response = await fetch(`/api/jobs/${job.id}`);
+      if (!response.ok) return job;
+      return await response.json() as BatchJob;
+    }));
+
+    setBatchJobs(updated);
+    return updated;
+  };
+
   const pollBatchJobs = async (jobs: BatchJob[]) => {
     let current = jobs;
 
     while (current.some((job) => job.status === "queued" || job.status === "running")) {
       await new Promise((resolve) => setTimeout(resolve, 900));
-      const updated = await Promise.all(current.map(async (job) => {
-        const response = await fetch(`/api/jobs/${job.id}`);
-        if (!response.ok) return job;
-        return await response.json() as BatchJob;
-      }));
+      const updated = await refreshBatchJobs(current);
 
       current = updated;
-      setBatchJobs(updated);
-
       const done = updated.filter((job) => job.status === "done").length;
       const failed = updated.filter((job) => job.status === "error").length;
+      const canceled = updated.filter((job) => job.status === "canceled").length;
       const totalProgress = updated.reduce((sum, job) => sum + Math.max(0, Math.min(100, Number(job.progress) || 0)), 0);
       setDownloadProgress({
         active: updated.some((job) => job.status === "queued" || job.status === "running"),
         progress: updated.length ? totalProgress / updated.length : 0,
-        status: `Очередь: готово ${done}/${updated.length}${failed ? `, ошибок ${failed}` : ""}`,
+        status: `Очередь: готово ${done}/${updated.length}${failed ? `, ошибок ${failed}` : ""}${canceled ? `, остановлено ${canceled}` : ""}`,
         savedDir: updated.find((job) => job.outputDir)?.outputDir
       });
     }
   };
 
-  const handleBatchDownload = async (text: string) => {
+  const handleBatchDownload = async (text: string, formatId: string) => {
     const urls = text
       .split(/\s+/)
       .map((item) => item.trim())
@@ -172,7 +187,7 @@ export default function App() {
       const response = await fetch("/api/download-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls, outputDir: folder, formatId: "best" })
+        body: JSON.stringify({ urls, outputDir: folder, formatId })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось запустить очередь.");
@@ -193,6 +208,29 @@ export default function App() {
     } finally {
       setBatchLoading(false);
     }
+  };
+
+  const stopBatch = async () => {
+    const activeIds = batchJobs
+      .filter((job) => job.status === "queued" || job.status === "running")
+      .map((job) => job.id);
+    if (activeIds.length === 0) return;
+
+    await fetch("/api/jobs/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: activeIds })
+    });
+
+    const updated = await refreshBatchJobs(batchJobs);
+    const canceled = updated.filter((job) => job.status === "canceled").length;
+    setBatchLoading(false);
+    setDownloadProgress({
+      active: false,
+      progress: 0,
+      status: canceled ? `Остановлено задач: ${canceled}` : "Очередь остановлена.",
+      savedDir: updated.find((job) => job.outputDir)?.outputDir
+    });
   };
 
   const showProgress = downloadProgress.active || downloadProgress.status || downloadProgress.error || downloadProgress.savedDir;
@@ -232,7 +270,7 @@ export default function App() {
             Вставь ссылку или список ссылок
           </h2>
           <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-lg mx-auto">
-            Одна ссылка открывает выбор формата. Несколько ссылок сразу уходят в очередь загрузки.
+            Одна ссылка открывает выбор формата. Несколько ссылок можно настроить и отправить в очередь.
           </p>
         </div>
 
@@ -243,6 +281,7 @@ export default function App() {
           <UrlInput
             onProcess={handleProcessUrl}
             onBatchDownload={handleBatchDownload}
+            onStopBatch={stopBatch}
             isLoading={loading}
             isBatchLoading={batchLoading}
             initialUrl={url}
@@ -259,16 +298,38 @@ export default function App() {
                     {downloadProgress.error || downloadProgress.status || "Файл сохранен"}
                   </p>
                 </div>
-                {downloadProgress.savedDir && (
-                  <button
-                    type="button"
-                    onClick={() => openFolder(downloadProgress.savedDir)}
-                    className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300"
-                  >
-                    <FolderOpen className="h-4 w-4" />
-                    Открыть папку
-                  </button>
-                )}
+                <div className="flex shrink-0 items-center gap-2">
+                  {downloadProgress.savedPath && (
+                    <button
+                      type="button"
+                      onClick={() => openFile(downloadProgress.savedPath)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300"
+                    >
+                      <Play className="h-4 w-4" />
+                      Открыть видео
+                    </button>
+                  )}
+                  {downloadProgress.active && (
+                    <button
+                      type="button"
+                      onClick={stopBatch}
+                      className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10"
+                    >
+                      <Square className="h-4 w-4" />
+                      Стоп
+                    </button>
+                  )}
+                  {downloadProgress.savedDir && (
+                    <button
+                      type="button"
+                      onClick={() => openFolder(downloadProgress.savedDir)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-300"
+                    >
+                      <FolderOpen className="h-4 w-4" />
+                      Папка
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-950">
                 <div
@@ -284,10 +345,17 @@ export default function App() {
               {batchJobs.map((job) => (
                 <div key={job.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[11px] font-mono text-zinc-300">{job.url}</p>
+                    <button
+                      type="button"
+                      onClick={() => job.output ? openFile(job.output) : undefined}
+                      className="block max-w-full truncate text-left text-[11px] font-mono text-zinc-300 transition hover:text-white disabled:pointer-events-none"
+                      disabled={!job.output}
+                    >
+                      {job.url}
+                    </button>
                     <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-900">
                       <div
-                        className={`h-full ${job.status === "error" ? "bg-rose-500" : job.status === "done" ? "bg-emerald-400" : "bg-indigo-500"}`}
+                        className={`h-full ${job.status === "error" ? "bg-rose-500" : job.status === "canceled" ? "bg-zinc-600" : job.status === "done" ? "bg-emerald-400" : "bg-indigo-500"}`}
                         style={{ width: `${Math.max(0, Math.min(100, job.progress || 0))}%` }}
                       />
                     </div>
@@ -297,9 +365,11 @@ export default function App() {
                       ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
                       : job.status === "error"
                         ? "border-rose-500/20 bg-rose-500/10 text-rose-300"
-                        : "border-indigo-500/20 bg-indigo-500/10 text-indigo-300"
+                        : job.status === "canceled"
+                          ? "border-zinc-600 bg-zinc-900 text-zinc-400"
+                          : "border-indigo-500/20 bg-indigo-500/10 text-indigo-300"
                   }`}>
-                    {job.status === "queued" ? "очередь" : job.status === "running" ? `${Math.round(job.progress || 0)}%` : job.status === "done" ? "готово" : "ошибка"}
+                    {job.status === "queued" ? "очередь" : job.status === "running" ? `${Math.round(job.progress || 0)}%` : job.status === "done" ? "готово" : job.status === "canceled" ? "стоп" : "ошибка"}
                   </span>
                 </div>
               ))}

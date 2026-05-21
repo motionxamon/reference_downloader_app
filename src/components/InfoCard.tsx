@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle, Download, ExternalLink, Film, Info, Monitor } from "lucide-react";
+import { AlertCircle, CheckCircle, Download, ExternalLink, Film, Info, Monitor, Play, Square } from "lucide-react";
 import { CompletedDownload, DownloadFormat, DownloadProgress, VideoDetails } from "../types";
 
 interface InfoCardProps {
@@ -15,30 +15,48 @@ type DownloadJob = {
   eta?: string;
   output?: string;
   outputDir?: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "canceled";
   error?: string;
 };
 
 export function InfoCard({ details, onSaveHistory, onDownloadProgress }: InfoCardProps) {
   const [selectedFormatId, setSelectedFormatId] = useState(details.formats[0]?.id || "best");
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
   const [completedFormatId, setCompletedFormatId] = useState<string | null>(null);
+  const [completedPath, setCompletedPath] = useState<string | undefined>();
   const [progress, setProgress] = useState(0);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedFormatId(details.formats[0]?.id || "best");
     setCompletedFormatId(null);
+    setCompletedPath(undefined);
     setDownloadError(null);
   }, [details]);
 
   const selectedFormat = details.formats.find((format) => format.id === selectedFormatId) || details.formats[0];
 
+  const openFile = async (path?: string) => {
+    if (!path) return;
+    await fetch("/api/open-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
+  };
+
   const handleDownload = async () => {
     if (!selectedFormat) return;
 
+    if (completedPath && completedFormatId === selectedFormat.id) {
+      await openFile(completedPath);
+      return;
+    }
+
     setDownloadingFormatId(selectedFormat.id);
     setCompletedFormatId(null);
+    setCompletedPath(undefined);
     setDownloadError(null);
     setProgress(0);
     onDownloadProgress({ active: true, progress: 0, status: "Выбери папку для сохранения..." });
@@ -64,12 +82,15 @@ export function InfoCard({ details, onSaveHistory, onDownloadProgress }: InfoCar
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось запустить загрузку.");
 
+      setCurrentJobId(data.id);
       const job = await pollJob(data.id);
       const savedPath = job.output;
       const savedDir = job.outputDir || folder;
 
+      setCurrentJobId(null);
       setDownloadingFormatId(null);
       setCompletedFormatId(selectedFormat.id);
+      setCompletedPath(savedPath);
       onDownloadProgress({
         active: false,
         progress: 100,
@@ -78,13 +99,22 @@ export function InfoCard({ details, onSaveHistory, onDownloadProgress }: InfoCar
         savedDir
       });
       onSaveHistory(selectedFormat, { savedPath, savedDir });
-      setTimeout(() => setCompletedFormatId(null), 3500);
     } catch (error: any) {
       const message = error.message || "Ошибка скачивания.";
+      setCurrentJobId(null);
       setDownloadingFormatId(null);
       setDownloadError(message);
       onDownloadProgress({ active: false, progress, status: "", error: message });
     }
+  };
+
+  const stopDownload = async () => {
+    if (!currentJobId) return;
+    await fetch(`/api/jobs/${currentJobId}/cancel`, { method: "POST" });
+    setCurrentJobId(null);
+    setDownloadingFormatId(null);
+    setDownloadError("Загрузка остановлена.");
+    onDownloadProgress({ active: false, progress, status: "Загрузка остановлена." });
   };
 
   const chooseFolder = async () => {
@@ -117,6 +147,7 @@ export function InfoCard({ details, onSaveHistory, onDownloadProgress }: InfoCar
       });
 
       if (job.status === "done") return job;
+      if (job.status === "canceled") throw new Error("Загрузка остановлена.");
       if (job.status === "error") throw new Error(job.error || "yt-dlp вернул ошибку.");
     }
   };
@@ -209,30 +240,43 @@ export function InfoCard({ details, onSaveHistory, onDownloadProgress }: InfoCar
             </select>
           </label>
 
-          <button
-            onClick={handleDownload}
-            disabled={isDownloading || !selectedFormat}
-            className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl px-5 text-xs font-semibold tracking-wide transition active:scale-95 disabled:pointer-events-none sm:min-w-40 ${
-              isCompleted ? "bg-emerald-500 text-black" : "bg-white text-black hover:bg-zinc-200 disabled:opacity-60"
-            }`}
-          >
-            {isDownloading ? (
-              <>
-                <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
-                <span>{progress > 0 ? `${progress.toFixed(0)}%` : "Скачивание..."}</span>
-              </>
-            ) : isCompleted ? (
-              <>
-                <CheckCircle className="w-3.5 h-3.5" />
-                <span>Готово!</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-3.5 h-3.5" />
-                <span>Скачать видео</span>
-              </>
+          <div className="flex gap-2">
+            {isDownloading && (
+              <button
+                type="button"
+                onClick={stopDownload}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-rose-500/30 px-4 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10"
+              >
+                <Square className="w-3.5 h-3.5" />
+                Стоп
+              </button>
             )}
-          </button>
+
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading || !selectedFormat}
+              className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl px-5 text-xs font-semibold tracking-wide transition active:scale-95 disabled:pointer-events-none sm:min-w-40 ${
+                isCompleted ? "bg-emerald-500 text-black hover:bg-emerald-400" : "bg-white text-black hover:bg-zinc-200 disabled:opacity-60"
+              }`}
+            >
+              {isDownloading ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
+                  <span>{progress > 0 ? `${progress.toFixed(0)}%` : "Скачивание..."}</span>
+                </>
+              ) : isCompleted ? (
+                <>
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Готово</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Скачать видео</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {selectedFormat && (

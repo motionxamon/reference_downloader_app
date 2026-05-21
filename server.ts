@@ -2,7 +2,7 @@ import express from "express";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 type Platform = "instagram" | "youtube" | "pinterest" | "vimeo" | "tiktok" | "reddit" | "twitter" | "vk" | "yandex" | "dailymotion" | "twitch" | "unknown";
 
@@ -15,11 +15,12 @@ type Job = {
   eta: string;
   output: string;
   outputDir: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "canceled";
   logs: string[];
   error?: string;
   startedAt: string;
   finishedAt?: string;
+  child?: ChildProcessWithoutNullStreams;
 };
 
 const appRoot = process.env.MOTIONXAMON_APP_ROOT || process.cwd();
@@ -290,6 +291,11 @@ function newestFileInDir(dir: string) {
   }
 }
 
+function serializeJob(job: Job) {
+  const { child: _child, ...safeJob } = job;
+  return safeJob;
+}
+
 function cleanError(error: unknown) {
   return String(error instanceof Error ? error.message : error)
     .replace(/\s+/g, " ")
@@ -534,6 +540,32 @@ app.post("/api/open-folder", (req, res) => {
   }
 });
 
+app.post("/api/open-file", (req, res) => {
+  if (process.platform !== "win32") {
+    res.status(501).json({ error: "Открытие файла пока реализовано только для Windows." });
+    return;
+  }
+
+  const targetPath = String(req.body?.path || "");
+  const resolved = path.resolve(targetPath);
+
+  if (!targetPath || !existsSync(resolved) || !statSync(resolved).isFile()) {
+    res.status(404).json({ error: "Файл не найден." });
+    return;
+  }
+
+  try {
+    spawn("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Start-Process -LiteralPath '${resolved.replace(/'/g, "''")}'`
+    ], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: friendlyError(error) });
+  }
+});
+
 app.post("/api/process", async (req, res) => {
   const url = String(req.body?.url || "").trim();
 
@@ -655,16 +687,18 @@ function runDownloadJob(job: Job) {
   job.logs.push(`Starting download ${job.id}`);
 
   try {
-    const { result } = runYtDlp(downloadArgs(job), (text) => {
+    const { child, result } = runYtDlp(downloadArgs(job), (text) => {
       for (const line of text.split(/\r?\n/).filter(Boolean)) {
         job.logs.push(line);
         if (job.logs.length > 120) job.logs.shift();
         parseProgress(line, job);
       }
     });
+    job.child = child;
 
     result
       .then(() => {
+        if (job.status === "canceled") return;
         job.progress = 100;
         if (job.output && !path.isAbsolute(job.output)) {
           job.output = path.join(job.outputDir, job.output);
@@ -676,11 +710,14 @@ function runDownloadJob(job: Job) {
         job.finishedAt = new Date().toISOString();
       })
       .catch((error) => {
-        job.status = "error";
-        job.error = friendlyError(error, job.url);
-        job.finishedAt = new Date().toISOString();
+        if (job.status !== "canceled") {
+          job.status = "error";
+          job.error = friendlyError(error, job.url);
+          job.finishedAt = new Date().toISOString();
+        }
       })
       .finally(() => {
+        job.child = undefined;
         activeDownloads = Math.max(0, activeDownloads - 1);
         processQueue();
       });
@@ -719,6 +756,27 @@ function enqueueDownload(url: string, formatId: string, outputDir: string) {
   };
   jobs.set(id, job);
   pendingJobs.push(job);
+  processQueue();
+  return job;
+}
+
+function cancelJob(job: Job) {
+  if (job.status === "done" || job.status === "error" || job.status === "canceled") return job;
+
+  if (job.status === "queued") {
+    const index = pendingJobs.findIndex((pending) => pending.id === job.id);
+    if (index >= 0) pendingJobs.splice(index, 1);
+    job.progress = 0;
+  }
+
+  job.status = "canceled";
+  job.error = "Загрузка остановлена.";
+  job.finishedAt = new Date().toISOString();
+
+  if (job.child && !job.child.killed) {
+    job.child.kill("SIGTERM");
+  }
+
   processQueue();
   return job;
 }
@@ -780,7 +838,7 @@ app.post("/api/download-batch", (req, res) => {
   try {
     const created = urls.map((url) => enqueueDownload(url, formatId, outputDir));
     res.json({
-      jobs: created.map((job) => ({ id: job.id, url: job.url, status: job.status })),
+      jobs: created.map((job) => serializeJob(job)),
       maxConcurrentDownloads: downloadSettings.maxConcurrentDownloads
     });
   } catch (error) {
@@ -794,7 +852,27 @@ app.get("/api/jobs/:id", (req, res) => {
     res.status(404).json({ error: "Задача не найдена." });
     return;
   }
-  res.json(job);
+  res.json(serializeJob(job));
+});
+
+app.post("/api/jobs/:id/cancel", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: "Задача не найдена." });
+    return;
+  }
+  res.json(serializeJob(cancelJob(job)));
+});
+
+app.post("/api/jobs/cancel", (req, res) => {
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.map((id: unknown) => String(id))
+    : [];
+  const targetJobs = ids.length > 0
+    ? ids.map((id) => jobs.get(id)).filter(Boolean) as Job[]
+    : Array.from(jobs.values()).filter((job) => job.status === "queued" || job.status === "running");
+
+  res.json({ canceled: targetJobs.map((job) => serializeJob(cancelJob(job))) });
 });
 
 async function start() {
