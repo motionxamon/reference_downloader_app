@@ -9,10 +9,11 @@
     "setup": "node scripts/setup-yt-dlp.js",
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
-    "electron": "npm.cmd run build && electron .",
-    "dist:win": "npm.cmd run build && electron-builder --win nsis",
-    "dist:portable": "npm.cmd run build && electron-builder --win portable",
-    "start": "npm.cmd run build && node dist/server.cjs",
+    "electron": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "start": "npm run build && node dist/server.cjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -60,6 +61,16 @@
         "portable"
       ],
       "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
