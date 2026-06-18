@@ -10,9 +10,9 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
     "electron": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win nsis",
-    "dist:portable": "npm run build && electron-builder --win portable",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:portable": "npm run build && electron-builder --win portable --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
     "start": "npm run build && node dist/server.cjs",
     "lint": "tsc --noEmit"
   },
