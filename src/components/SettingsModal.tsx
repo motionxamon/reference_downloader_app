@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { DownloadCloud, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
+import { DownloadCloud, KeyRound, RotateCcw, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 export type DownloadSettings = {
   maxConcurrentDownloads: number;
@@ -7,6 +7,8 @@ export type DownloadSettings = {
   concurrentFragments: number;
   retries: number;
   instagramCookiesBrowser: string;
+  instagramCookiesProfile: string;
+  instagramCookiesFile: string;
 };
 
 export type ToolsStatus = {
@@ -38,7 +40,9 @@ const defaults: DownloadSettings = {
   rateLimit: "",
   concurrentFragments: 1,
   retries: 10,
-  instagramCookiesBrowser: ""
+  instagramCookiesBrowser: "",
+  instagramCookiesProfile: "",
+  instagramCookiesFile: ""
 };
 
 export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalProps) {
@@ -46,6 +50,8 @@ export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalPro
   const [tools, setTools] = useState<ToolsStatus | null>(null);
   const [status, setStatus] = useState("");
   const [toolsBusy, setToolsBusy] = useState(false);
+  const [instagramBusy, setInstagramBusy] = useState(false);
+  const [instagramClearBusy, setInstagramClearBusy] = useState(false);
 
   const refreshTools = async () => {
     const response = await fetch("/api/tools");
@@ -104,13 +110,45 @@ export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalPro
     }
   };
 
+  const connectInstagram = async () => {
+    setInstagramBusy(true);
+    setStatus("Открой Instagram и войди в аккаунт...");
+    try {
+      const response = await fetch("/api/instagram/connect", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не удалось подключить Instagram.");
+      setSettings({ ...defaults, ...data.settings });
+      setStatus("Instagram подключен. Cookies сохранены локально.");
+    } catch (error: any) {
+      setStatus(error.message || "Не удалось подключить Instagram.");
+    } finally {
+      setInstagramBusy(false);
+    }
+  };
+
+  const disconnectInstagram = async () => {
+    setInstagramClearBusy(true);
+    setStatus("Удаляем локальную Instagram-сессию...");
+    try {
+      const response = await fetch("/api/instagram/disconnect", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не удалось удалить Instagram-сессию.");
+      setSettings({ ...defaults, ...data.settings });
+      setStatus("Instagram-сессия удалена с этого компьютера.");
+    } catch (error: any) {
+      setStatus(error.message || "Не удалось удалить Instagram-сессию.");
+    } finally {
+      setInstagramClearBusy(false);
+    }
+  };
+
   const updateNumber = (key: keyof DownloadSettings, value: string) => {
     setSettings((current) => ({ ...current, [key]: Number(value) }));
   };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-[#161920] shadow-2xl shadow-black/40">
+      <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#161920] shadow-2xl shadow-black/40">
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-indigo-300">
@@ -126,7 +164,7 @@ export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalPro
           </button>
         </div>
 
-        <div className="space-y-5 p-5">
+        <div className="space-y-5 overflow-y-auto p-5">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/50 p-4">
             <div className="mb-3">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">Инструменты</h3>
@@ -226,9 +264,69 @@ export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalPro
               <option value="">Off</option>
               <option value="chrome">Chrome</option>
               <option value="edge">Edge</option>
+              <option value="firefox">Firefox</option>
             </select>
             <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
-              Enable only if Instagram links fail. Log in to Instagram in the selected browser first.
+              Chrome and Edge can lock cookies on Windows while open. Firefox or a cookies.txt file is usually more reliable.
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={connectInstagram}
+                disabled={instagramBusy || instagramClearBusy}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/30 px-3 py-2.5 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/10 disabled:pointer-events-none disabled:opacity-60"
+              >
+                {instagramBusy ? (
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-500 border-t-emerald-300 animate-spin" />
+                ) : (
+                  <KeyRound className="h-3.5 w-3.5" />
+                )}
+                Connect Instagram
+              </button>
+              <button
+                type="button"
+                onClick={disconnectInstagram}
+                disabled={instagramBusy || instagramClearBusy || (!settings.instagramCookiesFile && !settings.instagramCookiesBrowser)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-500/30 px-3 py-2.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/10 disabled:pointer-events-none disabled:opacity-50"
+              >
+                {instagramClearBusy ? (
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-500 border-t-rose-300 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete session
+              </button>
+            </div>
+            {settings.instagramCookiesFile && (
+              <p className="mt-2 truncate text-[10px] font-mono text-emerald-300/80" title={settings.instagramCookiesFile}>
+                Connected: {settings.instagramCookiesFile}
+              </p>
+            )}
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold text-zinc-200">Instagram browser profile</span>
+            <input
+              value={settings.instagramCookiesProfile}
+              onChange={(event) => setSettings((current) => ({ ...current, instagramCookiesProfile: event.target.value }))}
+              placeholder="Default, Profile 1, Profile 2"
+              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-xs text-zinc-200 outline-none transition placeholder:text-zinc-700 focus:border-emerald-500/50"
+            />
+            <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              Leave empty for the default browser profile. For Chrome this is usually Default, Profile 1, or Profile 2.
+            </p>
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold text-zinc-200">Instagram cookies.txt</span>
+            <input
+              value={settings.instagramCookiesFile}
+              onChange={(event) => setSettings((current) => ({ ...current, instagramCookiesFile: event.target.value }))}
+              placeholder="C:\\Users\\User\\Downloads\\instagram-cookies.txt"
+              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-xs text-zinc-200 outline-none transition placeholder:text-zinc-700 focus:border-emerald-500/50"
+            />
+            <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              Optional. If filled, this Netscape cookies.txt file is used instead of browser cookies.
             </p>
           </label>
 

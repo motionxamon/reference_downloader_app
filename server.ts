@@ -37,17 +37,21 @@ const allowedDownloadDirs = new Set<string>([defaultDownloadsDir]);
 const jobs = new Map<string, Job>();
 const pendingJobs: Job[] = [];
 let activeDownloads = 0;
+const settingsPath = path.join(toolsDir, "settings.json");
 
 const downloadSettings = {
   maxConcurrentDownloads: clampNumber(Number(process.env.MOTIONXAMON_MAX_DOWNLOADS || 2), 1, 6),
   rateLimit: "",
   concurrentFragments: 1,
   retries: 10,
-  instagramCookiesBrowser: ""
+  instagramCookiesBrowser: "",
+  instagramCookiesProfile: "",
+  instagramCookiesFile: ""
 };
 
 mkdirSync(defaultDownloadsDir, { recursive: true });
 mkdirSync(toolsDir, { recursive: true });
+loadPersistedSettings();
 
 app.use(express.json({ limit: "1mb" }));
 app.use("/downloads", express.static(defaultDownloadsDir));
@@ -75,7 +79,40 @@ function isSupportedUrl(value: string) {
 
 function sanitizeCookiesBrowser(value: unknown) {
   const browser = String(value || "").trim().toLowerCase();
-  return browser === "chrome" || browser === "edge" ? browser : "";
+  return browser === "chrome" || browser === "edge" || browser === "firefox" ? browser : "";
+}
+
+function sanitizeCookiesProfile(value: unknown) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>"]/g, "")
+    .slice(0, 120);
+}
+
+function sanitizeCookiesFile(value: unknown) {
+  const filePath = String(value || "").trim().replace(/^"|"$/g, "");
+  if (!filePath) return "";
+  if (!/\.txt$/i.test(filePath)) return "";
+  return filePath;
+}
+
+function loadPersistedSettings() {
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, "utf8"));
+    downloadSettings.maxConcurrentDownloads = clampNumber(Number(parsed.maxConcurrentDownloads), 1, 6);
+    downloadSettings.concurrentFragments = clampNumber(Number(parsed.concurrentFragments), 1, 8);
+    downloadSettings.retries = clampNumber(Number(parsed.retries), 0, 50);
+    downloadSettings.rateLimit = sanitizeRateLimit(parsed.rateLimit);
+    downloadSettings.instagramCookiesBrowser = sanitizeCookiesBrowser(parsed.instagramCookiesBrowser);
+    downloadSettings.instagramCookiesProfile = sanitizeCookiesProfile(parsed.instagramCookiesProfile);
+    downloadSettings.instagramCookiesFile = sanitizeCookiesFile(parsed.instagramCookiesFile);
+  } catch {
+    // Missing or old settings file: keep safe defaults.
+  }
+}
+
+function writePersistedSettings() {
+  writeFileSync(settingsPath, JSON.stringify(downloadSettings, null, 2), "utf8");
 }
 
 function detectPlatform(value: string): Platform {
@@ -94,8 +131,13 @@ function detectPlatform(value: string): Platform {
 }
 
 function browserCookieArgs(url: string) {
-  if (detectPlatform(url) !== "instagram" || !downloadSettings.instagramCookiesBrowser) return [];
-  return ["--cookies-from-browser", downloadSettings.instagramCookiesBrowser];
+  if (detectPlatform(url) !== "instagram") return [];
+  if (downloadSettings.instagramCookiesFile) return ["--cookies", downloadSettings.instagramCookiesFile];
+  if (!downloadSettings.instagramCookiesBrowser) return [];
+  const source = downloadSettings.instagramCookiesProfile
+    ? `${downloadSettings.instagramCookiesBrowser}:${downloadSettings.instagramCookiesProfile}`
+    : downloadSettings.instagramCookiesBrowser;
+  return ["--cookies-from-browser", source];
 }
 
 function platformFromExtractor(extractor?: string, fallback: Platform = "unknown"): Platform {
@@ -596,6 +638,12 @@ function cleanError(error: unknown) {
     .trim();
 }
 
+function withDiagnostic(summary: string, message: string) {
+  const diagnostic = message.slice(0, 600);
+  if (!diagnostic || diagnostic === summary) return summary;
+  return `${summary} Details: ${diagnostic}`;
+}
+
 function friendlyError(error: unknown, url = "") {
   const message = cleanError(error);
   const platform = detectPlatform(url);
@@ -612,8 +660,12 @@ function friendlyError(error: unknown, url = "") {
     return "Видео недоступно для скачивания по этой публичной ссылке. Оно может быть удалено, ограничено по региону или требовать вход на платформу.";
   }
 
+  if (/Could not copy Chrome cookie database|LockProfileCookieDatabase|PermissionError/i.test(message)) {
+    return withDiagnostic("Chrome/Edge заблокировал cookie-базу на Windows. Полностью закрой Chrome/Edge перед скачиванием или используй Firefox/cookies.txt в Settings.", message);
+  }
+
   if (platform === "instagram" && /(empty media response|login|cookie|cookies|not accessible|authentication)/i.test(message)) {
-    return "Instagram не отдал видео без авторизации. Войди в Instagram в Chrome или Edge, затем в Settings включи Instagram cookies для этого браузера и попробуй снова.";
+    return withDiagnostic("Instagram не отдал видео без авторизации. Проверь Instagram cookies и профиль браузера в Settings.", message);
   }
 
   if (/Requested format is not available/i.test(message)) {
@@ -648,10 +700,54 @@ app.post("/api/settings", (req, res) => {
     downloadSettings.retries = clampNumber(Number(req.body?.retries), 0, 50);
     downloadSettings.rateLimit = sanitizeRateLimit(req.body?.rateLimit);
     downloadSettings.instagramCookiesBrowser = sanitizeCookiesBrowser(req.body?.instagramCookiesBrowser);
+    downloadSettings.instagramCookiesProfile = sanitizeCookiesProfile(req.body?.instagramCookiesProfile);
+    downloadSettings.instagramCookiesFile = sanitizeCookiesFile(req.body?.instagramCookiesFile);
+    writePersistedSettings();
     processQueue();
     res.json(downloadSettings);
   } catch (error) {
     res.status(400).json({ error: friendlyError(error) });
+  }
+});
+
+app.post("/api/instagram/connect", async (_req, res) => {
+  try {
+    const connector = (globalThis as any).motionxamonConnectInstagram;
+    if (typeof connector !== "function") {
+      res.status(409).json({ error: "Instagram login is available only in the desktop app." });
+      return;
+    }
+
+    const result = await connector();
+    if (!result?.ok || !result?.cookiesFile) {
+      res.status(400).json({ error: result?.error || "Instagram login was not completed." });
+      return;
+    }
+
+    downloadSettings.instagramCookiesFile = sanitizeCookiesFile(result.cookiesFile);
+    downloadSettings.instagramCookiesBrowser = "";
+    downloadSettings.instagramCookiesProfile = "";
+    writePersistedSettings();
+    res.json({ ok: true, cookiesFile: downloadSettings.instagramCookiesFile, settings: downloadSettings });
+  } catch (error) {
+    res.status(500).json({ error: friendlyError(error) });
+  }
+});
+
+app.post("/api/instagram/disconnect", async (_req, res) => {
+  try {
+    const cleaner = (globalThis as any).motionxamonClearInstagram;
+    if (typeof cleaner === "function") {
+      await cleaner();
+    }
+
+    downloadSettings.instagramCookiesFile = "";
+    downloadSettings.instagramCookiesBrowser = "";
+    downloadSettings.instagramCookiesProfile = "";
+    writePersistedSettings();
+    res.json({ ok: true, settings: downloadSettings });
+  } catch (error) {
+    res.status(500).json({ error: friendlyError(error) });
   }
 });
 

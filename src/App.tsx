@@ -360,6 +360,11 @@ export default function App() {
                         style={{ width: `${Math.max(0, Math.min(100, job.progress || 0))}%` }}
                       />
                     </div>
+                    {job.error && (
+                      <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-rose-300/90" title={job.error}>
+                        {job.error}
+                      </p>
+                    )}
                   </div>
                   <span className={`shrink-0 rounded-md border px-2 py-1 text-[10px] font-semibold uppercase ${
                     job.status === "done"
