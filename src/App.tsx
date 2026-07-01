@@ -34,6 +34,7 @@ export default function App() {
   const [batchJobs, setBatchJobs] = useState<BatchJob[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 
   useEffect(() => {
     try {
@@ -236,7 +237,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0A0B0E] text-slate-200 font-sans flex flex-col selection:bg-indigo-500/30 selection:text-white">
-      <header className="flex items-center justify-between px-6 py-4 border-b border-slate-900/80 bg-[#0D0F14] sticky top-0 z-50">
+      <header className={`flex items-center justify-between py-4 pr-6 border-b border-slate-900/80 bg-[#0D0F14] sticky top-0 z-50 ${isMac ? "pl-24" : "pl-6"}`}>
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 active:scale-95 transition-transform">
             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

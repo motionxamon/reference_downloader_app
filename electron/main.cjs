@@ -152,6 +152,8 @@ global.motionxamonClearInstagram = async function clearInstagram() {
 };
 
 function createWindow() {
+  const isMac = process.platform === "darwin";
+
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 820,
@@ -161,6 +163,12 @@ function createWindow() {
     title: "motionxamon",
     icon: path.join(appRoot, "build", "icon.ico"),
     autoHideMenuBar: true,
+    ...(isMac ? {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { x: 18, y: 18 },
+      vibrancy: "under-window",
+      visualEffectState: "active"
+    } : {}),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true
