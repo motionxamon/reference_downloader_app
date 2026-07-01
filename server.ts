@@ -42,7 +42,8 @@ const downloadSettings = {
   maxConcurrentDownloads: clampNumber(Number(process.env.MOTIONXAMON_MAX_DOWNLOADS || 2), 1, 6),
   rateLimit: "",
   concurrentFragments: 1,
-  retries: 10
+  retries: 10,
+  instagramCookiesBrowser: ""
 };
 
 mkdirSync(defaultDownloadsDir, { recursive: true });
@@ -72,6 +73,11 @@ function isSupportedUrl(value: string) {
   }
 }
 
+function sanitizeCookiesBrowser(value: unknown) {
+  const browser = String(value || "").trim().toLowerCase();
+  return browser === "chrome" || browser === "edge" ? browser : "";
+}
+
 function detectPlatform(value: string): Platform {
   if (/youtube\.com|youtu\.be|shorts/i.test(value)) return "youtube";
   if (/vimeo\.com/i.test(value)) return "vimeo";
@@ -85,6 +91,11 @@ function detectPlatform(value: string): Platform {
   if (/dailymotion\.com|dai\.ly/i.test(value)) return "dailymotion";
   if (/twitch\.tv/i.test(value)) return "twitch";
   return "unknown";
+}
+
+function browserCookieArgs(url: string) {
+  if (detectPlatform(url) !== "instagram" || !downloadSettings.instagramCookiesBrowser) return [];
+  return ["--cookies-from-browser", downloadSettings.instagramCookiesBrowser];
 }
 
 function platformFromExtractor(extractor?: string, fallback: Platform = "unknown"): Platform {
@@ -601,6 +612,10 @@ function friendlyError(error: unknown, url = "") {
     return "Видео недоступно для скачивания по этой публичной ссылке. Оно может быть удалено, ограничено по региону или требовать вход на платформу.";
   }
 
+  if (platform === "instagram" && /(empty media response|login|cookie|cookies|not accessible|authentication)/i.test(message)) {
+    return "Instagram не отдал видео без авторизации. Войди в Instagram в Chrome или Edge, затем в Settings включи Instagram cookies для этого браузера и попробуй снова.";
+  }
+
   if (/Requested format is not available/i.test(message)) {
     return "Платформа отдала метаданные, но выбранный формат недоступен. Попробуй вариант \"Лучшее качество\".";
   }
@@ -632,6 +647,7 @@ app.post("/api/settings", (req, res) => {
     downloadSettings.concurrentFragments = clampNumber(Number(req.body?.concurrentFragments), 1, 8);
     downloadSettings.retries = clampNumber(Number(req.body?.retries), 0, 50);
     downloadSettings.rateLimit = sanitizeRateLimit(req.body?.rateLimit);
+    downloadSettings.instagramCookiesBrowser = sanitizeCookiesBrowser(req.body?.instagramCookiesBrowser);
     processQueue();
     res.json(downloadSettings);
   } catch (error) {
@@ -901,6 +917,7 @@ app.post("/api/process", async (req, res) => {
       "--no-playlist",
       "--no-warnings",
       "--skip-download",
+      ...browserCookieArgs(url),
       url
     ]);
     const { stdout } = await result;
@@ -952,7 +969,9 @@ function downloadArgs(job: Job) {
   return [
     "--newline",
     "--no-playlist",
-    "--restrict-filenames",
+    "--windows-filenames",
+    "--trim-filenames",
+    "180",
     "--merge-output-format",
     "mp4",
     "--retries",
@@ -963,12 +982,13 @@ function downloadArgs(job: Job) {
     String(downloadSettings.concurrentFragments),
     ...(downloadSettings.rateLimit ? ["--limit-rate", downloadSettings.rateLimit] : []),
     ...(ffmpeg ? ["--ffmpeg-location", path.dirname(ffmpeg)] : []),
+    ...browserCookieArgs(job.url),
     "-f",
     format,
     "-P",
     job.outputDir,
     "-o",
-    "%(title).120B [%(id)s].%(ext)s",
+    "%(uploader|instagram).80B - %(title|reel).120B [%(id)s].%(ext)s",
     job.url
   ];
 }

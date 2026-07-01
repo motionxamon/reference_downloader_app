@@ -6,6 +6,7 @@ export type DownloadSettings = {
   rateLimit: string;
   concurrentFragments: number;
   retries: number;
+  instagramCookiesBrowser: string;
 };
 
 export type ToolsStatus = {
@@ -36,7 +37,8 @@ const defaults: DownloadSettings = {
   maxConcurrentDownloads: 2,
   rateLimit: "",
   concurrentFragments: 1,
-  retries: 10
+  retries: 10,
+  instagramCookiesBrowser: ""
 };
 
 export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalProps) {
@@ -213,6 +215,22 @@ export function SettingsModal({ open, onClose, onToolsChange }: SettingsModalPro
               />
             </label>
           </div>
+
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold text-zinc-200">Instagram cookies</span>
+            <select
+              value={settings.instagramCookiesBrowser}
+              onChange={(event) => setSettings((current) => ({ ...current, instagramCookiesBrowser: event.target.value }))}
+              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-xs text-zinc-200 outline-none transition focus:border-emerald-500/50"
+            >
+              <option value="">Off</option>
+              <option value="chrome">Chrome</option>
+              <option value="edge">Edge</option>
+            </select>
+            <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+              Enable only if Instagram links fail. Log in to Instagram in the selected browser first.
+            </p>
+          </label>
 
           {status && <p className="text-xs text-zinc-400">{status}</p>}
         </div>

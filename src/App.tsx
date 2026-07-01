@@ -6,6 +6,7 @@ import { HistoryList } from "./components/HistoryList";
 import { SettingsModal } from "./components/SettingsModal";
 import { ToolStatusPanel } from "./components/ToolStatusPanel";
 import { CompletedDownload, DownloadFormat, DownloadProgress, HistoryItem, VideoDetails } from "./types";
+import { extractUrls } from "./urlUtils";
 
 const idleProgress: DownloadProgress = {
   active: false,
@@ -163,10 +164,7 @@ export default function App() {
   };
 
   const handleBatchDownload = async (text: string, formatId: string) => {
-    const urls = text
-      .split(/\s+/)
-      .map((item) => item.trim())
-      .filter((item) => /^https?:\/\//i.test(item));
+    const urls = extractUrls(text);
 
     if (urls.length === 0) {
       setError("Добавь одну или несколько http/https ссылок для очереди.");

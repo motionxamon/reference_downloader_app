@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ArrowRight, Clipboard, Download, Link2, X } from "lucide-react";
+import { extractUrls } from "../urlUtils";
 
 interface UrlInputProps {
   onProcess: (url: string) => void;
@@ -17,11 +18,6 @@ export function UrlInput({ onProcess, onBatchDownload, onStopBatch, isLoading, i
   useEffect(() => {
     setUrl(initialUrl);
   }, [initialUrl]);
-
-  const extractUrls = (value: string) => value
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter((item) => /^https?:\/\//i.test(item));
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
