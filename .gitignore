@@ -2,7 +2,7 @@ node_modules/
 bin/
 downloads/
 release/
-release-artifacts/
+release-artifacts*/
 dist/
 public/
 prototype/
