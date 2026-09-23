@@ -6,12 +6,15 @@ interface UrlInputProps {
   onProcess: (url: string) => void;
   onBatchDownload: (text: string, formatId: string) => void;
   onStopBatch: () => void;
+  onClear: () => void;
+  hasResults: boolean;
+  isDownloading: boolean;
   isLoading: boolean;
   isBatchLoading?: boolean;
   initialUrl?: string;
 }
 
-export function UrlInput({ onProcess, onBatchDownload, onStopBatch, isLoading, isBatchLoading = false, initialUrl = "" }: UrlInputProps) {
+export function UrlInput({ onProcess, onBatchDownload, onStopBatch, onClear, hasResults, isDownloading, isLoading, isBatchLoading = false, initialUrl = "" }: UrlInputProps) {
   const [url, setUrl] = useState(initialUrl);
   const [batchFormatId, setBatchFormatId] = useState("best");
 
@@ -33,6 +36,11 @@ export function UrlInput({ onProcess, onBatchDownload, onStopBatch, isLoading, i
     } catch {
       // Clipboard can be unavailable in some browser contexts.
     }
+  };
+
+  const handleClear = () => {
+    setUrl("");
+    onClear();
   };
 
   const getDetectedPlatform = () => {
@@ -81,12 +89,14 @@ export function UrlInput({ onProcess, onBatchDownload, onStopBatch, isLoading, i
         />
 
         <div className="flex items-center gap-1.5 pr-1 pt-1.5">
-          {url && (
+          {(url || hasResults) && (
             <button
               type="button"
-              onClick={() => setUrl("")}
-              title="Очистить"
-              className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+              onClick={handleClear}
+              disabled={isLoading || isBatchLoading || isDownloading}
+              title="Очистить поле и результаты"
+              aria-label="Очистить поле и результаты"
+              className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition disabled:pointer-events-none disabled:opacity-40"
             >
               <X className="w-4 h-4" />
             </button>

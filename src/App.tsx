@@ -71,6 +71,14 @@ export default function App() {
     localStorage.removeItem("vortex_download_history");
   };
 
+  const handleClearWorkspace = () => {
+    setUrl("");
+    setError(null);
+    setVideoDetails(null);
+    setBatchJobs([]);
+    setDownloadProgress(idleProgress);
+  };
+
   const openFolder = async (path?: string) => {
     if (!path) return;
     await fetch("/api/open-folder", {
@@ -284,6 +292,9 @@ export default function App() {
             onProcess={handleProcessUrl}
             onBatchDownload={handleBatchDownload}
             onStopBatch={stopBatch}
+            onClear={handleClearWorkspace}
+            hasResults={Boolean(videoDetails || batchJobs.length || downloadProgress.status || downloadProgress.error || error)}
+            isDownloading={downloadProgress.active}
             isLoading={loading}
             isBatchLoading={batchLoading}
             initialUrl={url}

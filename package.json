@@ -1,6 +1,6 @@
 {
   "name": "motionxamon-video-downloader",
-  "version": "0.1.11",
+  "version": "1.0.1",
   "private": true,
   "description": "motionxamon video downloader",
   "type": "module",
