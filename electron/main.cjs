@@ -44,6 +44,12 @@ function startServer() {
   require(path.join(appRoot, "dist", "server.cjs"));
 }
 
+global.motionxamonRefreshInstagramCookies = async function refreshInstagramCookies() {
+  const filePath = path.join(app.getPath("userData"), "instagram-cookies.txt");
+  if (fs.existsSync(filePath)) return filePath;
+  return saveInstagramCookies(session.fromPartition("persist:motionxamon-instagram"));
+};
+
 function cookieToNetscapeLine(cookie) {
   const domain = cookie.domain || "";
   const includeSubdomains = domain.startsWith(".") ? "TRUE" : "FALSE";
@@ -107,6 +113,8 @@ global.motionxamonConnectInstagram = function connectInstagram() {
 
     const checkCookies = async () => {
       try {
+        const currentUrl = instagramLoginWindow?.webContents.getURL() || "";
+        if (/instagram\.com\/(accounts\/login|challenge|accounts\/onetap)/i.test(currentUrl)) return;
         const cookiesFile = await saveInstagramCookies(instagramSession);
         if (cookiesFile) {
           finish({ ok: true, cookiesFile });
@@ -123,12 +131,7 @@ global.motionxamonConnectInstagram = function connectInstagram() {
     instagramLoginWindow.on("closed", async () => {
       instagramLoginWindow = undefined;
       instagramSession.cookies.off("changed", checkCookies);
-      try {
-        const cookiesFile = await saveInstagramCookies(instagramSession);
-        finish(cookiesFile ? { ok: true, cookiesFile } : { ok: false, error: "Instagram login was not completed." });
-      } catch (error) {
-        reject(error);
-      }
+      finish({ ok: false, error: "Instagram login was not completed." });
     });
 
     instagramLoginWindow.loadURL("https://www.instagram.com/accounts/login/");
@@ -202,6 +205,7 @@ app.whenReady().then(async () => {
   logFile = path.join(app.getPath("userData"), "motionxamon.log");
   process.env.MOTIONXAMON_DEFAULT_DOWNLOADS_DIR = path.join(app.getPath("downloads"), "motionxamon");
   process.env.MOTIONXAMON_TOOLS_DIR = path.join(app.getPath("userData"), "tools");
+  process.env.MOTIONXAMON_INSTAGRAM_COOKIES_PATH = path.join(app.getPath("userData"), "instagram-cookies.txt");
   process.env.PORT = String(await findFreePort());
   startServer();
   setTimeout(createWindow, 700);

@@ -1,9 +1,9 @@
 import express from "express";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cp, mkdtemp, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmod, mkdtemp, readdir, rename } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import https from "node:https";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -54,6 +54,25 @@ mkdirSync(toolsDir, { recursive: true });
 loadPersistedSettings();
 
 app.use(express.json({ limit: "1mb" }));
+app.use("/api", (req, res, next) => {
+  const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const host = req.headers.host || "";
+  const origin = req.headers.origin;
+  let sameOrigin = !origin;
+  try {
+    if (origin) {
+      const parsed = new URL(origin);
+      sameOrigin = parsed.protocol === "http:" && expectedHosts.has(parsed.host);
+    }
+  } catch {
+    sameOrigin = false;
+  }
+  if (!expectedHosts.has(host) || !sameOrigin || req.headers["sec-fetch-site"] === "cross-site") {
+    res.status(403).json({ error: "Запрос к локальному API отклонён." });
+    return;
+  }
+  next();
+});
 app.use("/downloads", express.static(defaultDownloadsDir));
 
 function clampNumber(value: number, min: number, max: number) {
@@ -138,6 +157,16 @@ function browserCookieArgs(url: string) {
     ? `${downloadSettings.instagramCookiesBrowser}:${downloadSettings.instagramCookiesProfile}`
     : downloadSettings.instagramCookiesBrowser;
   return ["--cookies-from-browser", source];
+}
+
+async function refreshInstagramCookies(url: string) {
+  if (detectPlatform(url) !== "instagram") return;
+  const internalPath = process.env.MOTIONXAMON_INSTAGRAM_COOKIES_PATH;
+  if (!internalPath || downloadSettings.instagramCookiesFile !== internalPath) return;
+  const refresh = (globalThis as any).motionxamonRefreshInstagramCookies;
+  if (typeof refresh !== "function" || !await refresh()) {
+    throw new Error("Instagram-сессия истекла. Подключи Instagram заново в настройках.");
+  }
 }
 
 function platformFromExtractor(extractor?: string, fallback: Platform = "unknown"): Platform {
@@ -369,11 +398,16 @@ async function installTools(force = false) {
     const latest = await latestToolInfo(tool);
     const latestTag = latest.tagName;
     const downloadUrl = latest.assetUrl || tool.url;
-
-    if ("zipEntries" in tool && tool.zipEntries) {
-      await downloadZipTool({ ...tool, url: downloadUrl });
-    } else {
-      await download(downloadUrl, tool.target);
+    const stagingDir = await mkdtemp(path.join(toolsDir, ".update-"));
+    try {
+      const staged = await stageTool(tool, downloadUrl, stagingDir);
+      for (const entry of staged) {
+        const version = getToolVersion(entry.source, [entry.name === "yt-dlp" ? "--version" : "-version"]);
+        if (!version) throw new Error(`Downloaded ${entry.name} could not be started.`);
+      }
+      await replaceToolFiles(staged, stagingDir);
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
     }
 
     manifest[tool.name] = {
@@ -386,23 +420,44 @@ async function installTools(force = false) {
   return await toolsStatus();
 }
 
-async function downloadZipTool(tool: { name: string; target: string; url: string; zipEntries?: string[] }) {
-  if (!tool.zipEntries) return;
-  const tempDir = await mkdtemp(path.join(tmpdir(), "motionxamon-"));
-  const archive = path.join(tempDir, `${tool.name}.zip`);
+type StagedToolFile = { name: string; source: string; target: string };
 
+async function stageTool(tool: ToolDefinition, url: string, stagingDir: string): Promise<StagedToolFile[]> {
+  if (!tool.zipEntries) {
+    const source = path.join(stagingDir, path.basename(tool.target));
+    await download(url, source);
+    if (process.platform !== "win32") await chmod(source, 0o755);
+    return [{ name: tool.name, source, target: tool.target }];
+  }
+
+  const archive = path.join(stagingDir, `${tool.name}.zip`);
+  const extractedDir = path.join(stagingDir, "extracted");
+  await download(url, archive);
+  await expandArchive(archive, extractedDir);
+  const files = await listFiles(extractedDir);
+  return tool.zipEntries.map((entry) => {
+    const source = files.find((file) => path.basename(file).toLowerCase() === entry.toLowerCase());
+    if (!source) throw new Error(`${entry} was not found in ${tool.name} archive.`);
+    return { name: entry, source, target: path.join(toolsDir, entry) };
+  });
+}
+
+async function replaceToolFiles(files: StagedToolFile[], stagingDir: string) {
+  const replaced: Array<{ target: string; backup: string; hadOriginal: boolean }> = [];
   try {
-    await download(tool.url, archive);
-    await expandArchive(archive, tempDir);
-
-    const files = await listFiles(tempDir);
-    for (const entry of tool.zipEntries) {
-      const found = files.find((file) => path.basename(file).toLowerCase() === entry.toLowerCase());
-      if (!found) throw new Error(`${entry} was not found in ${tool.name} archive.`);
-      await cp(found, path.join(toolsDir, entry), { force: true });
+    for (const file of files) {
+      const backup = path.join(stagingDir, `${path.basename(file.target)}.backup`);
+      const hadOriginal = existsSync(file.target);
+      if (hadOriginal) await rename(file.target, backup);
+      replaced.push({ target: file.target, backup, hadOriginal });
+      await rename(file.source, file.target);
     }
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+  } catch (error) {
+    for (const file of replaced.reverse()) {
+      rmSync(file.target, { force: true });
+      if (file.hadOriginal) await rename(file.backup, file.target);
+    }
+    throw error;
   }
 }
 
@@ -455,10 +510,7 @@ function download(source: string, destination: string, redirects = 0): Promise<v
         return;
       }
 
-      const file = createWriteStream(destination);
-      response.pipe(file);
-      file.on("finish", () => file.close(() => resolve()));
-      file.on("error", reject);
+      pipeline(response, createWriteStream(destination)).then(() => resolve(), reject);
     }).on("error", reject);
   });
 }
@@ -474,20 +526,34 @@ function runYtDlp(args: string[], onData?: (text: string) => void) {
     windowsHide: true,
     shell: process.platform === "win32" && command.endsWith(".cmd")
   });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
 
   let stdout = "";
   let stderr = "";
+  let stdoutLine = "";
+  let stderrLine = "";
 
   child.stdout.on("data", (chunk) => {
     const text = chunk.toString();
-    stdout += text;
-    onData?.(text);
+    stdout = onData ? (stdout + text).slice(-65536) : stdout + text;
+    if (onData) {
+      stdoutLine += text;
+      const lines = stdoutLine.split(/\r?\n/);
+      stdoutLine = lines.pop() || "";
+      for (const line of lines) onData(line);
+    }
   });
 
   child.stderr.on("data", (chunk) => {
     const text = chunk.toString();
-    stderr += text;
-    onData?.(text);
+    stderr = (stderr + text).slice(-65536);
+    if (onData) {
+      stderrLine += text;
+      const lines = stderrLine.split(/\r?\n/);
+      stderrLine = lines.pop() || "";
+      for (const line of lines) onData(line);
+    }
   });
 
   return {
@@ -495,6 +561,8 @@ function runYtDlp(args: string[], onData?: (text: string) => void) {
     result: new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       child.on("error", reject);
       child.on("close", (code) => {
+        if (stdoutLine) onData?.(stdoutLine);
+        if (stderrLine) onData?.(stderrLine);
         if (code === 0) resolve({ stdout, stderr });
         else reject(new Error(stderr.trim() || stdout.trim() || `yt-dlp exited with code ${code}`));
       });
@@ -502,9 +570,9 @@ function runYtDlp(args: string[], onData?: (text: string) => void) {
   };
 }
 
-function runProcess(command: string, args: string[]) {
+function runProcess(command: string, args: string[], windowsHide = false) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: false });
+    const child = spawn(command, args, { windowsHide });
     let stdout = "";
     let stderr = "";
 
@@ -595,6 +663,7 @@ async function getRemoteSize(url: string) {
 }
 
 function parseProgress(line: string, job: Job) {
+  const finalPath = line.match(/^__MOTIONXAMON_FILE__(.+)$/);
   const percent = line.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
   const speed = line.match(/at\s+([^\s]+\/s)/);
   const eta = line.match(/ETA\s+([^\s]+)/);
@@ -606,24 +675,8 @@ function parseProgress(line: string, job: Job) {
   if (eta) job.eta = eta[1];
   if (destination) job.output = destination[1].trim();
   if (merged) job.output = merged[1].trim();
+  if (finalPath) job.output = finalPath[1].trim();
   if (line.includes("has already been downloaded")) job.progress = 100;
-}
-
-function newestFileInDir(dir: string) {
-  try {
-    return readdirSync(dir)
-      .map((name) => path.join(dir, name))
-      .filter((filePath) => {
-        try {
-          return statSync(filePath).isFile();
-        } catch {
-          return false;
-        }
-      })
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-  } catch {
-    return undefined;
-  }
 }
 
 function serializeJob(job: Job) {
@@ -948,7 +1001,7 @@ app.post("/api/open-folder", (req, res) => {
   }
 });
 
-app.post("/api/open-file", (req, res) => {
+app.post("/api/open-file", async (req, res) => {
   if (process.platform !== "win32") {
     res.status(501).json({ error: "Открытие файла пока реализовано только для Windows." });
     return;
@@ -963,11 +1016,11 @@ app.post("/api/open-file", (req, res) => {
   }
 
   try {
-    spawn("powershell.exe", [
+    await runProcess("powershell.exe", [
       "-NoProfile",
       "-Command",
-      `Start-Process -LiteralPath '${resolved.replace(/'/g, "''")}'`
-    ], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      `Start-Process -FilePath '${resolved.replace(/'/g, "''")}' -ErrorAction Stop`
+    ], true);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: friendlyError(error) });
@@ -983,6 +1036,7 @@ app.post("/api/process", async (req, res) => {
   }
 
   try {
+    await refreshInstagramCookies(url);
     if (isDirectVideoUrl(url)) {
       const platform = detectPlatform(url);
       const size = await getRemoteSize(url);
@@ -1064,6 +1118,12 @@ function downloadArgs(job: Job) {
 
   return [
     "--newline",
+    "--encoding",
+    "utf-8",
+    "--progress",
+    "--no-simulate",
+    "--print",
+    "after_move:__MOTIONXAMON_FILE__%(filepath)s",
     "--no-playlist",
     "--windows-filenames",
     "--trim-filenames",
@@ -1089,18 +1149,23 @@ function downloadArgs(job: Job) {
   ];
 }
 
-function runDownloadJob(job: Job) {
+async function runDownloadJob(job: Job) {
   job.status = "running";
   job.startedAt = new Date().toISOString();
   job.logs.push(`Starting download ${job.id}`);
 
   try {
+    await refreshInstagramCookies(job.url);
+    if (jobs.get(job.id)?.status === "canceled") {
+      activeDownloads = Math.max(0, activeDownloads - 1);
+      processQueue();
+      return;
+    }
     const { child, result } = runYtDlp(downloadArgs(job), (text) => {
-      for (const line of text.split(/\r?\n/).filter(Boolean)) {
-        job.logs.push(line);
-        if (job.logs.length > 120) job.logs.shift();
-        parseProgress(line, job);
-      }
+      if (!text) return;
+      job.logs.push(text);
+      if (job.logs.length > 120) job.logs.shift();
+      parseProgress(text, job);
     });
     job.child = child;
 
@@ -1111,9 +1176,7 @@ function runDownloadJob(job: Job) {
         if (job.output && !path.isAbsolute(job.output)) {
           job.output = path.join(job.outputDir, job.output);
         }
-        if (!job.output) {
-          job.output = newestFileInDir(job.outputDir) || "";
-        }
+        if (job.output && !existsSync(job.output)) job.output = "";
         job.status = "done";
         job.finishedAt = new Date().toISOString();
       })
